@@ -1,0 +1,52 @@
+name: Bug report
+description: Something DeskVault did or didn't do that it should have.
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: One or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: input
+    attributes:
+      label: DeskVault version
+      description: Shown at the top of Settings &rarr; About.
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 Pro 24H2
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Node version
+      placeholder: v20.11.0
+  - type: textarea
+    attributes:
+      label: Log excerpt (optional)
+      description: Last 50-100 lines of `data\vault.log` around the time of the problem.
+      render: text
+  - type: checkboxes
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: This is not a security problem (those go through SECURITY.md)
+          required: true

@@ -1,0 +1,30 @@
+{
+  "name": "deskvault",
+  "version": "1.0.0",
+  "description": "A local home for your important files, folders, links and notes. Tracks files when they move, backs them up to any drive, and previews code, Markdown and PDFs in the browser.",
+  "author": "TCPeep (https://github.com/TCPeep)",
+  "license": "GPL-3.0-only",
+  "homepage": "https://github.com/TCPeep/DeskVault#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TCPeep/DeskVault.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TCPeep/DeskVault/issues"
+  },
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js --open",
+    "test": "node test/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@highlightjs/cdn-assets": "11.11.1",
+    "dompurify": "3.2.6",
+    "marked": "15.0.12"
+  }
+}

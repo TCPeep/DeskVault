@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- DeskVault - Copyright (C) 2026 TCPeep - https://github.com/TCPeep/DeskVault
+     Licensed under GPL-3.0 with attribution terms (keep the credit). See LICENSE and NOTICE. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeskVault</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/vendor/marked.js" defer></script>
+  <script src="/vendor/purify.js" defer></script>
+  <script src="/vendor/highlight.js" defer></script>
+  <script src="/vendor/hl-powershell.js" defer></script>
+  <script src="/vendor/hl-dos.js" defer></script>
+  <script src="/vendor/hl-dockerfile.js" defer></script>
+  <script src="/vendor/hl-dart.js" defer></script>
+  <script type="module" src="/js/main.js"></script>
+</head>
+<body>
+  <div id="app" class="app">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="main">
+      <header id="topbar" class="topbar"></header>
+      <section id="page" class="page"></section>
+    </main>
+  </div>
+  <div id="viewer" class="viewer" hidden></div>
+  <div id="layer"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

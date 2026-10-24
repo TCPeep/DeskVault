@@ -1,0 +1,8 @@
+node_modules/
+# your library, AI index, storage scan and thumbnails - personal, never commit
+data/
+# built from native/*.cs on first run
+bin/
+# portable Node.js that release zips / backup copies carry
+node/
+*.zip
