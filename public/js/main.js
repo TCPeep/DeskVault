@@ -8,8 +8,10 @@ import { syncViewer, viewerOpen } from './viewer.js';
 import { renderBackups, onJob, onBackupsChanged } from './backups.js';
 import { renderSettings, renderActivity } from './settings.js';
 import { renderStorage, onStorageEvent } from './storage.js';
+import { onAppsEvent } from './apps.js';
 import { renderReinstall } from './reinstall.js';
 import { renderAi, onAiEvent } from './ai.js';
+import { renderBills, billsBadge, checkReminders, today as billsToday } from './bills.js';
 const { esc, icon } = ui;
 
 const page = document.getElementById('page');
@@ -130,6 +132,13 @@ function cardHtml(i) {
 }
 
 // ---------- sidebar ----------
+function billsNav(r) {
+  const L = S.app.lock || {};
+  const bb = L.bills && !L.unlocked ? { n: 0 } : billsBadge();
+  const active = !S.query && r.name === 'bills';
+  return `<a class="nav ${active ? 'active' : ''}" href="#/bills">${icon('receipt')}<span class="label">Bills</span>${bb.n ? `<span class="count ${bb.alert ? 'alert' : 'due'}" title="${bb.alert ? 'Late or due soon' : 'Due soon'}">${bb.n}</span>` : L.bills && !L.unlocked ? icon('lock', 'muted') : ''}</a>`;
+}
+
 function renderSidebar() {
   const r = parseHash();
   const count = f => S.items.filter(f).length;
@@ -147,6 +156,7 @@ function renderSidebar() {
     ${nav('all', null, 'All items', icon('layers'), S.items.length)}
     ${nav('pinned', null, 'Pinned', icon('pin'), count(i => i.pinned) || null, 'data-drop="pin"')}
     ${nav('recent', null, 'Recently opened', icon('clock'), null)}
+    ${billsNav(r)}
     ${S.app.ai?.enabled !== false ? nav('ai', null, 'Ask AI', icon('sparkle'), null) : ''}
     ${att ? `<a class="nav ${r.name === 'attention' && !S.query ? 'active' : ''}" href="#/attention">${icon('alert')}<span class="label">Needs attention</span><span class="count alert">${att}</span></a>` : ''}
     <div class="side-head"><span>Collections</span><button class="icon-btn" data-act="new-collection" title="New collection">${icon('plus')}</button></div>
@@ -273,6 +283,7 @@ function renderPage(force = false) {
   if (!S.query && r.name === 'storage') return renderStorage(page);
   if (!S.query && r.name === 'reinstall') return renderReinstall(page);
   if (!S.query && r.name === 'ai') return renderAi(page);
+  if (!S.query && r.name === 'bills') return renderBills(page);
   if (!S.query && r.name === 'attention') renderAttention(r);
   else renderLibrary(r);
   page.scrollTop = keepScroll;
@@ -538,8 +549,10 @@ hooks.render = () => {
   updateTopbar();
   const r = parseHash();
   // Backups/Settings hold form state and update themselves; only build them on navigation.
-  if (!['backups', 'settings', 'ai'].includes(r.name) || S.query || pageKey(r) !== lastPageKey) renderPage();
+  const selfUpdating = ['backups', 'settings', 'ai'].includes(r.name) || (r.name === 'storage' && r.arg === 'apps');
+  if (!selfUpdating || S.query || pageKey(r) !== lastPageKey) renderPage();
   syncViewer(r);
+  checkReminders();
 };
 
 // Bookmark button ("Save to Vault"): #/save?u=<url>&t=<title>
@@ -583,6 +596,8 @@ connectEvents({
   storage: d => onStorageEvent('progress', d),
   'storage-done': () => onStorageEvent('done'),
   ai: d => onAiEvent(d),
+  apps: d => onAppsEvent(d),
+  bills: () => refresh(),
 }, connected => {
   document.title = connected ? 'DeskVault' : 'DeskVault (offline)';
   if (connected && S.loaded) refresh();
@@ -593,4 +608,12 @@ renderTopbar();
 refresh().then(() => { if (handleSaveRoute()) renderPage(); }).catch(e => {
   page.innerHTML = `<div class="empty"><h2>Can't reach the Vault server</h2><p>${esc(e.message)}</p><p>Start it with <b>Vault.exe</b> or <span class="mono">node server.js</span>.</p></div>`;
 });
-setInterval(() => { if (S.loaded && !document.hidden) { renderSidebar(); } }, 60000);
+// Once a minute: refresh counts, re-check bill reminders, and redraw Bills when the date rolls over.
+let lastDay = billsToday();
+setInterval(() => {
+  if (!S.loaded) return;
+  const day = billsToday();
+  if (!document.hidden) renderSidebar();
+  if (day !== lastDay) { lastDay = day; if (parseHash().name === 'bills') renderPage(true); }
+  checkReminders();
+}, 60000);

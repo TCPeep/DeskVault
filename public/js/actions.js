@@ -376,7 +376,7 @@ export async function unlock() {
 
 export async function lockNow() { await post('/api/lock/lock'); ui.toast('Locked', { type: 'ok', timeout: 1500 }); refresh(); }
 
-export async function setLock({ itemIds, collectionId, locked }) {
+export async function setLock({ itemIds, collectionId, bills, locked }) {
   try {
     if (locked && !S.app.lock?.any) {
       const ok = await ui.confirm({
@@ -387,7 +387,7 @@ export async function setLock({ itemIds, collectionId, locked }) {
       if (!ok) return false;
     }
     if (!locked && !S.app.lock?.unlocked && !(await unlock())) return false;
-    await post('/api/lock/set', { itemIds, collectionId, locked });
+    await post('/api/lock/set', { itemIds, collectionId, bills, locked });
     ui.toast(locked ? 'Locked' : 'Lock removed', { type: 'ok', timeout: 2500 });
     refresh();
     return true;

@@ -5,6 +5,7 @@ import { S, refresh, parseHash } from './state.js';
 import { get, post } from './api.js';
 import * as ui from './ui.js';
 import { pickPaths } from './actions.js';
+import { renderApps, modeSeg } from './apps.js';
 const { esc, icon } = ui;
 
 const BUCKETS = [
@@ -25,8 +26,9 @@ const host = () => (parseHash().name === 'storage' ? ST.page?.querySelector('#st
 const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
 
 export async function renderStorage(page) {
+  if (parseHash().arg === 'apps') return renderApps(page);
   ST.page = page;
-  page.innerHTML = `<div id="stg"><div class="page-head"><h1>Storage</h1></div><div class="loading">${icon('loader', 'spin')}</div></div>`;
+  page.innerHTML = `<div id="stg"><div class="page-head"><h1>Storage</h1><div class="grow"></div>${modeSeg('files')}</div><div class="loading">${icon('loader', 'spin')}</div></div>`;
   await loadStatus();
   if (!ST.roots) ST.roots = ST.status.summary?.roots || ST.status.suggested;
   if (ST.status.atimeOn === false) ST.f.basis = 'changed';
@@ -46,7 +48,7 @@ function draw() {
   const st = ST.status, sum = st.summary;
   const scanning = st.scan?.state === 'running';
   el.innerHTML = `
-    <div class="page-head"><h1>Storage</h1><span class="sub">Find what you don't use any more, and clear it out safely</span></div>
+    <div class="page-head"><h1>Storage</h1><span class="sub">Find what you don't use any more, and clear it out safely</span><div class="grow"></div>${modeSeg('files')}</div>
     <section class="panel" id="scanPanel">${scanPanelHtml()}</section>
     ${!sum ? (scanning ? '' : `<div class="empty"><div class="tile xl c-folder">${icon('pie')}</div><h2>Pick where to look, then press Scan</h2>
       <p>Vault checks every file's size and when you last opened it, then shows you the big things you haven't touched in ages.</p></div>`) : `
