@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const ROOT = path.resolve(process.argv[2] || path.join(os.tmpdir(), `vault-test-${Date.now()}`));
+// realpath expands 8.3 short names (CI's TEMP is C:\Users\RUNNER~1\...), which DeskVault always reports in full.
+const ROOT = path.resolve(process.argv[2] || path.join(fs.realpathSync.native(os.tmpdir()), `vault-test-${Date.now()}`));
 const PORT = 4478;
 const BASE = `http://127.0.0.1:${PORT}`;
 const FX = path.join(ROOT, 'fx');
