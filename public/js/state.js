@@ -7,7 +7,7 @@ export function load(key, def) { try { return localStorage.getItem('vault.' + ke
 export function save(key, val) { try { localStorage.setItem('vault.' + key, val); } catch {} }
 
 export const S = {
-  items: [], collections: [], settings: {}, tracker: { searching: [] }, jobs: [], app: {},
+  items: [], collections: [], bills: [], settings: {}, tracker: { searching: [] }, jobs: [], app: {},
   selected: new Set(), query: '', kind: 'all', sort: load('sort', 'added'),
   loaded: false, backupScope: null,
 };

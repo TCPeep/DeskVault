@@ -17,6 +17,8 @@ import { fetchPreview, removeThumbs, THUMB_RE } from './lib/links.js';
 import { candidates as reinstallCandidates } from './lib/reinstall.js';
 import { Ai } from './lib/ai.js';
 import { Native } from './lib/native.js';
+import { Bills } from './lib/bills.js';
+import { Apps } from './lib/apps.js';
 import * as files from './lib/files.js';
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -63,6 +65,10 @@ const storage = new Storage({ store, native, emit, dataDir: DATA_DIR, tracker })
 const backups = new Backups({ store, emit, tracker, appDir: APP_DIR, dataDir: DATA_DIR, atimeEnabled: () => storage.atimeEnabled() });
 const THUMBS = path.join(DATA_DIR, 'thumbs');
 ai = new Ai({ store, emit, dataDir: DATA_DIR, isLocked: i => itemLocked(i) });
+backups.aiMemory = () => ai.book.listMemory();
+backups.addAiMemory = m => ai.book.addMemory({ text: m.text, source: m.source || 'manual' });
+const bills = new Bills({ store, emit });
+const apps = new Apps({ native, store, emit, appDir: APP_DIR, dataDir: DATA_DIR, log });
 
 // ---------- helpers ----------
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
@@ -113,6 +119,12 @@ const isUnlocked = () => Date.now() < lock.until;
 const colLocked = id => !!(id && store.collections.find(c => c.id === id)?.locked);
 const itemLocked = i => !!(i.locked || colLocked(i.collection));
 const isHidden = i => itemLocked(i) && !isUnlocked();
+// Bills can be locked as a whole: amounts, names and due dates stay out of the browser until unlocked.
+const billsHidden = () => !!store.settings.billsLocked && !isUnlocked();
+function billsAccess() {
+  if (billsHidden()) throw new HttpError(423, 'Bills are locked. Unlock with Windows Hello first.');
+  if (store.settings.billsLocked) lock.until = Date.now() + lockMinutes() * 60000;
+}
 const shownName = i => (isHidden(i) ? 'a locked item' : i.name);
 const HELLO_HELP = {
   NotConfiguredForUser: 'Windows Hello isn\'t set up. Add a PIN in Windows Settings > Accounts > Sign-in options.',
@@ -219,6 +231,7 @@ function stateSnapshot() {
   return {
     items: store.items.map(i => (isHidden(i) ? redact(i) : i)),
     collections: store.collections,
+    bills: billsHidden() ? [] : store.data.bills,
     settings: store.settings,
     tracker: tracker.status(),
     jobs: backups.listJobs(),
@@ -226,7 +239,8 @@ function stateSnapshot() {
       version: VERSION, dataDir: DATA_DIR, appDir: APP_DIR, port: PORT, home: os.homedir(), computer: os.hostname(),
       vscode: !!vscodeExe(), terminal: !!terminalExe(), systemDrive: (process.env.SystemDrive || 'C:').toUpperCase(),
       lock: { unlocked: isUnlocked(), until: lock.until, minutes: lockMinutes(), hello: lock.hello, help: HELLO_HELP[lock.hello] || null,
-        any: store.collections.some(c => c.locked) || store.items.some(i => i.locked) },
+        any: !!store.settings.billsLocked || store.collections.some(c => c.locked) || store.items.some(i => i.locked),
+        bills: !!store.settings.billsLocked },
       ai: { enabled: ai.cfg.enabled },
       shortcuts: Object.fromEntries(Object.entries(shortcutPaths()).map(([k, p]) => [k, fs.existsSync(p)])),
     },
@@ -240,6 +254,7 @@ const route = (method, pattern, handler) => routes.push({ method, pattern, handl
 route('GET', '/api/ping', () => ({ ok: true, app: 'vault' }));
 route('GET', '/api/state', () => stateSnapshot());
 route('GET', '/api/activity', () => store.data.activity.slice(0, 300).map(ev => {
+  if (ev.type === 'bill' && billsHidden()) return { at: ev.at, type: ev.type, message: 'Something changed in your locked bills' };
   const it = ev.itemId && store.item(ev.itemId);
   return it && isHidden(it) ? { at: ev.at, type: ev.type, message: 'Something changed on a locked item' } : ev;
 }));
@@ -507,6 +522,7 @@ route('POST', '/api/settings', async b => {
   }
   if (p.reset === 'searchRoots') s.searchRoots = defaultSettings().searchRoots;
   if (p.lockMinutes) s.lockMinutes = Math.max(1, Math.min(240, Number(p.lockMinutes) || 5));
+  if (p.billCurrency && /^[A-Z]{3}$/.test(p.billCurrency)) s.billCurrency = p.billCurrency;
   store.save(); emit('settings');
   return s;
 });
@@ -554,6 +570,7 @@ route('POST', '/api/lock/set', async b => {
   const want = !!b.locked;
   if (!want && !isUnlocked()) throw new HttpError(423, 'Unlock with Windows Hello before removing a lock');
   if (want && lock.hello && lock.hello !== 'Available') throw bad(HELLO_HELP[lock.hello] || 'Windows Hello isn\'t available, so locking would lock you out.');
+  if (b.bills) store.settings.billsLocked = want;
   if (b.collectionId) {
     const c = store.collections.find(x => x.id === b.collectionId);
     if (!c) throw new HttpError(404, 'No such collection');
@@ -564,6 +581,13 @@ route('POST', '/api/lock/set', async b => {
   store.save(); emit('items');
   return { ok: true };
 });
+
+// ---------- bills ----------
+route('POST', '/api/bills/save', async b => { billsAccess(); return bills.save(b.bill); });
+route('POST', '/api/bills/remove', async b => { billsAccess(); return bills.remove(String(b.id || '')); });
+route('POST', '/api/bills/pay', async b => { billsAccess(); return bills.pay(String(b.id || ''), { amount: b.amount, date: b.date, note: b.note }); });
+route('POST', '/api/bills/skip', async b => { billsAccess(); return bills.pay(String(b.id || ''), { skip: true }); });
+route('POST', '/api/bills/undo', async b => { billsAccess(); return bills.undo(String(b.id || '')); });
 
 // ---------- local AI (Ollama) ----------
 route('GET', '/api/ai/status', async () => ai.status());
@@ -595,6 +619,59 @@ route('POST', '/api/ai/tags', async b => {
   else if (item.kind === 'folder') sample = 'Contains: ' + (await fsp.readdir(item.path).catch(() => [])).slice(0, 40).join(', ');
   return { tags: await ai.suggestTags(item, sample) };
 });
+
+// Saved chats. Sources that point at an item that's locked now are shown as "Locked item".
+const chatOut = c => ({ ...c, turns: c.turns.map(t => ({ ...t, sources: (t.sources || []).map(s => {
+  const it = store.item(s.itemId);
+  return it && isHidden(it) ? { n: s.n, itemId: s.itemId, title: 'Locked item', project: '', collection: '', snippet: '', locked: true } : s;
+}) })) });
+const chatOr404 = id => { const c = ai.book.chat(String(id || '')); if (!c) throw new HttpError(404, 'That chat no longer exists'); return c; };
+route('GET', '/api/ai/chats', async (b, q) => ai.book.listChats(q.get('q') || ''));
+route('GET', '/api/ai/chats/:id', async (b, q, params) => chatOut(chatOr404(params.id)));
+route('POST', '/api/ai/chats/update', async b => { chatOr404(b.id); emit('ai', { chats: true }); return chatOut(ai.book.updateChat(b.id, { title: b.title, pinned: b.pinned })); });
+route('POST', '/api/ai/chats/delete', async b => { chatOr404(b.id); ai.book.deleteChat(b.id); emit('ai', { chats: true }); return { ok: true }; });
+// The AI's memory: short facts the user wants it to keep in mind.
+route('GET', '/api/ai/memory', async () => ai.book.listMemory());
+route('POST', '/api/ai/memory/add', async b => {
+  const texts = (Array.isArray(b.texts) ? b.texts : [b.text]).map(t => String(t || '')).filter(t => t.trim());
+  if (!texts.length) throw bad('Write something to remember first');
+  const added = [];
+  try { for (const t of texts.slice(0, 20)) added.push(ai.book.addMemory({ text: t, source: b.chatId ? 'chat' : 'manual', chatId: b.chatId || null })); }
+  catch (e) { throw bad(e.message); }
+  emit('ai', { memory: true });
+  return { added };
+});
+route('POST', '/api/ai/memory/update', async b => {
+  let m;
+  try { m = ai.book.updateMemory(String(b.id || ''), b.text); } catch (e) { throw bad(e.message); }
+  if (!m) throw new HttpError(404, 'That memory no longer exists');
+  emit('ai', { memory: true });
+  return m;
+});
+route('POST', '/api/ai/memory/delete', async b => { ai.book.deleteMemory(String(b.id || '')); emit('ai', { memory: true }); return { ok: true }; });
+route('POST', '/api/ai/memory/suggest', async b => {
+  const t = chatOr404(b.chatId).turns[Number(b.turn)];
+  if (!t || !t.a) throw bad('That answer is gone');
+  return { facts: await ai.suggestMemory(t) };
+});
+
+// ---------- installed apps (Storage > Installed apps) ----------
+route('GET', '/api/apps', async (b, q) => apps.list({ refresh: q.get('refresh') === '1' }));
+route('POST', '/api/apps/note', async b => apps.setNote(String(b.id || ''), { stars: b.stars, note: b.note }));
+route('POST', '/api/apps/measure', async b => apps.measure(String(b.id || '')));
+route('POST', '/api/apps/open-folder', async b => {
+  const a = apps.app(String(b.id || ''));
+  if (!a.location || !fs.existsSync(a.location)) throw bad('This app doesn\'t say where it\'s installed');
+  return native.open(a.location);
+});
+route('POST', '/api/apps/uninstall', async b => {
+  const ids = Array.isArray(b.ids) ? b.ids.map(String).slice(0, 100) : [];
+  if (!ids.length) throw bad('Pick at least one app');
+  return apps.uninstall(ids);
+});
+route('POST', '/api/apps/queue/skip', async () => ({ ok: apps.skip() }));
+route('POST', '/api/apps/queue/cancel', async () => { apps.cancel(); return { ok: true }; });
+route('POST', '/api/apps/queue/clear', async () => { apps.clear(); return { ok: true }; });
 
 // ---------- storage manager ----------
 route('GET', '/api/storage', async () => { await storage.atimeEnabled(); return { ...(await storage.status()), bin: await native.binSize().catch(() => null) }; });
@@ -733,6 +810,15 @@ const server = http.createServer(async (req, res) => {
       return files.sendFile(req, res, abs, st, { 'Cache-Control': 'max-age=86400' });
     }
 
+    // /api/apps/icon/<hash>.png - cached app icons for Storage > Installed apps
+    if (pathname.startsWith('/api/apps/icon/') && req.method === 'GET') {
+      const abs = apps.iconPath(pathname.slice('/api/apps/icon/'.length));
+      if (!abs) throw new HttpError(404, 'Not found');
+      let st;
+      try { st = await fsp.stat(abs); } catch { throw new HttpError(404, 'Not found'); }
+      return files.sendFile(req, res, abs, st, { 'Cache-Control': 'max-age=86400' });
+    }
+
     // /f/<itemId>/<path inside item> - raw file bytes (viewer, PDF, images, media)
     if (pathname.startsWith('/f/') && (req.method === 'GET' || req.method === 'HEAD')) {
       const [, , id, ...rest] = pathname.split('/');
@@ -763,8 +849,8 @@ const server = http.createServer(async (req, res) => {
       } else {
         const question = String(body.question || '').trim().slice(0, 2000);
         if (!question) throw bad('Ask something first');
-        const history = (Array.isArray(body.history) ? body.history : []).slice(-4).map(h => ({ q: String(h.q || '').slice(0, 2000), a: String(h.a || '').slice(0, 6000) }));
-        job = (send, signal) => ai.ask({ question, history }, send, signal);
+        const chatId = body.chatId ? String(body.chatId) : null;
+        job = (send, signal) => ai.ask({ question, chatId }, send, signal);
       }
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
       const ctrl = new AbortController();
@@ -815,6 +901,7 @@ function openBrowser() { native.open(`http://127.0.0.1:${PORT}/`).catch(e => log
 function shutdown(why) {
   log(`Shutting down (${why})`);
   try { store.flush(); } catch {}
+  try { ai?.book.flushAll(); } catch {}
   for (const res of clients) res.end();
   server.close();
   setTimeout(() => process.exit(0), 300);

@@ -158,7 +158,7 @@ document.addEventListener('change', async e => {
 const EV = {
   moved: ['arrow-right', 'link'], found: ['check-circle', 'code'], missing: ['alert', 'pdf'], recycled: ['trash', 'archive'],
   offline: ['drive', 'file'], add: ['plus', 'md'], remove: ['x', 'file'], purge: ['trash', 'pdf'], backup: ['backup', 'video'],
-  restore: ['history', 'video'], import: ['import', 'md'],
+  restore: ['history', 'video'], import: ['import', 'md'], bill: ['receipt', 'code'],
 };
 
 export async function renderActivity(page) {

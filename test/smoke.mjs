@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const ROOT = path.resolve(process.argv[2] || path.join(os.tmpdir(), `vault-test-${Date.now()}`));
+// realpath expands 8.3 short names (CI's TEMP is C:\Users\RUNNER~1\...), which DeskVault always reports in full.
+const ROOT = path.resolve(process.argv[2] || path.join(fs.realpathSync.native(os.tmpdir()), `vault-test-${Date.now()}`));
 const PORT = 4478;
 const BASE = `http://127.0.0.1:${PORT}`;
 const FX = path.join(ROOT, 'fx');
@@ -317,7 +318,8 @@ try {
     assert.ok(Array.isArray(r.candidates) && r.candidates.length > 0);
     assert.ok(r.candidates.every(c => c.label && c.path && 'inVault' in c));
     assert.ok(r.items.length >= 5);
-    assert.equal(r.latest, null); // test backups live on C:, which a reinstall would wipe
+    // Test backups live on C:, which a reinstall would wipe, so they never count. (A real backup on another drive may.)
+    assert.ok(!r.latest || !/^c:/i.test(r.latest.folder || r.latest.dest || ''), JSON.stringify(r.latest)?.slice(0, 200));
   });
 
   await step('website previews (title, description, image, icon)', async () => {
@@ -411,11 +413,101 @@ try {
     assert.ok(sum.filter(l => l.type === 'token').length > 3, JSON.stringify(sum.slice(-2)));
     const tags = (await api('POST', '/api/ai/tags', { itemId: ids.proj })).json.tags;
     assert.ok(Array.isArray(tags) && tags.length > 0, JSON.stringify(tags));
+    // Saved chats: the first ask made one; a follow-up in it keeps the context and is stored with it.
+    const chat1 = lines.find(l => l.type === 'chat');
+    assert.ok(chat1?.id && chat1.isNew, 'ask starts a saved chat');
+    const follow = await ndjson('/api/ai/ask', { question: 'And when should I change the remote batteries?', chatId: chat1.id });
+    assert.equal(follow.find(l => l.type === 'chat').isNew, false);
+    assert.match(follow.filter(l => l.type === 'token').map(l => l.t).join(''), /march/i);
+    const saved = (await api('GET', `/api/ai/chats/${chat1.id}`)).json;
+    assert.equal(saved.turns.length, 2); assert.match(saved.turns[0].a, /4417/);
+    assert.ok((await api('GET', '/api/ai/chats')).json.some(c => c.id === chat1.id && c.turns === 2), 'chat listed');
+    assert.ok((await api('GET', '/api/ai/chats?q=batteries')).json.some(c => c.id === chat1.id), 'chat search');
+    assert.equal((await api('POST', '/api/ai/chats/update', { id: chat1.id, title: 'Garage stuff', pinned: true })).json.title, 'Garage stuff');
+    assert.equal((await api('GET', '/api/ai/chats/nope', null, { 'x-expect-error': 1 })).status, 404);
+
+    // Memory: "remember that …" is stored without the model and used in later answers, "forget …" removes it.
+    const rem = await ndjson('/api/ai/ask', { question: 'Remember that my bike lock code is 7731' });
+    assert.ok(rem.find(l => l.type === 'done')?.memory, 'remember handled as a memory');
+    assert.ok((await api('GET', '/api/ai/memory')).json.some(m => /7731/.test(m.text)), 'memory saved');
+    const bike = await ndjson('/api/ai/ask', { question: 'What is my bike lock code?' });
+    assert.match(bike.filter(l => l.type === 'token').map(l => l.t).join(''), /7731/, 'memory reaches the answer');
+    const fg = await ndjson('/api/ai/ask', { question: 'Forget my bike lock code' });
+    assert.match(fg.filter(l => l.type === 'token').map(l => l.t).join(''), /forgotten/i);
+    assert.ok(!(await api('GET', '/api/ai/memory')).json.some(m => /7731/.test(m.text)), 'memory removed');
+    const added = (await api('POST', '/api/ai/memory/add', { text: 'I keep spare keys in the blue box' })).json.added[0];
+    assert.equal((await api('POST', '/api/ai/memory/update', { id: added.id, text: 'Spare keys are in the blue box in the hall' })).json.text, 'Spare keys are in the blue box in the hall');
+    const sug = (await api('POST', '/api/ai/memory/suggest', { chatId: chat1.id, turn: 0 })).json;
+    assert.ok(Array.isArray(sug.facts), JSON.stringify(sug));
+    await api('POST', '/api/ai/memory/delete', { id: added.id });
+
+    // Project knowledge: a folder with a package.json gets an overview card that's used for "how do I run" questions.
+    const pj = path.join(ROOT, 'aiproj', 'lanterns');
+    fs.mkdirSync(pj, { recursive: true });
+    fs.writeFileSync(path.join(pj, 'package.json'), JSON.stringify({ name: 'lanterns', scripts: { dev: 'vite --port 5199' }, dependencies: { react: '19' } }));
+    fs.writeFileSync(path.join(pj, 'README.md'), '# Lanterns\n\nA tiny web app that shows lantern festival dates.\n');
+    const pItem = (await api('POST', '/api/items/add', { paths: [path.join(ROOT, 'aiproj')] })).json.added[0];
+    await api('POST', '/api/ai/index', {});
+    await waitFor(async () => { const s = (await api('GET', '/api/ai/status')).json; return !s.job && s.index.at ? s : null; }, 180000, 'reindex');
+    const run = await ndjson('/api/ai/ask', { question: 'How do I start the lanterns dev server?' });
+    const runSrc = run.find(l => l.type === 'sources').sources;
+    assert.ok(runSrc.some(s => s.itemId === pItem.id && s.overview), 'project overview used: ' + JSON.stringify(runSrc.map(s => s.title)));
+    assert.match(run.filter(l => l.type === 'token').map(l => l.t).join(''), /npm run dev|5199/);
+
     await api('POST', '/api/lock/set', { itemIds: [note.id], locked: true });
     const after = await ndjson('/api/ai/ask', { question: 'What is the garage door code?' });
     assert.ok(!after.find(l => l.type === 'sources').sources.some(s => s.itemId === note.id), 'locked note never reaches the AI');
     assert.ok(!after.filter(l => l.type === 'token').map(l => l.t).join('').includes('4417'), 'locked content not in answer');
+    const lockedView = (await api('GET', `/api/ai/chats/${chat1.id}`)).json;
+    assert.ok(lockedView.turns[0].sources.filter(s => s.itemId === note.id).every(s => s.locked && s.title === 'Locked item'), 'saved chat hides locked sources');
+    assert.ok((await api('POST', '/api/ai/chats/delete', { id: chat1.id })).json.ok);
     await api('POST', '/api/ai/unload', {});
+  });
+
+  await step('installed apps: list, icons, ratings, uninstall queue (on throwaway test entries)', async () => {
+    // Two fake per-user apps: A's "uninstaller" really removes its entry, B's closes without removing anything.
+    const KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall';
+    const reg = args => new Promise((res, rej) => spawn('reg.exe', args, { windowsHide: true }).on('close', c => (c === 0 ? res() : rej(new Error('reg ' + args.join(' '))))));
+    const addApp = async (name, cmd) => {
+      await reg(['add', `${KEY}\\${name}`, '/v', 'DisplayName', '/d', name, '/f']);
+      await reg(['add', `${KEY}\\${name}`, '/v', 'UninstallString', '/d', cmd, '/f']);
+      await reg(['add', `${KEY}\\${name}`, '/v', 'DisplayIcon', '/d', `${process.env.windir}\\System32\\notepad.exe,0`, '/f']);
+      await reg(['add', `${KEY}\\${name}`, '/v', 'EstimatedSize', '/t', 'REG_DWORD', '/d', '2048', '/f']);
+    };
+    const A = 'DeskVaultTestAppA', B = 'DeskVaultTestAppB';
+    try {
+      await addApp(A, `reg.exe delete "${KEY}\\${A}" /f`);
+      await addApp(B, 'reg.exe query HKCU\\Software');
+      const list = (await api('GET', '/api/apps?refresh=1')).json;
+      const a = list.apps.find(x => x.name === A), b = list.apps.find(x => x.name === B);
+      assert.ok(a && b, 'test apps listed');
+      assert.equal(a.kind, 'desktop'); assert.equal(a.size, 2048 * 1024); assert.equal(a.scope, 'Just you');
+      assert.ok(a.icon, 'icon extracted');
+      assert.equal((await fetch(`${BASE}/api/apps/icon/${a.icon}`)).status, 200);
+      assert.equal((await fetch(`${BASE}/api/apps/icon/..%5Clibrary.json`)).status, 404);
+      assert.ok(!('iconSpec' in a) && !('tag' in a), 'internals not exposed');
+      assert.ok(list.apps.length > 2, 'real apps listed too');
+      assert.deepEqual((await api('POST', '/api/apps/note', { id: a.id, stars: 4, note: 'keep?' })).json, { stars: 4, note: 'keep?' });
+      assert.equal((await api('GET', '/api/apps')).json.apps.find(x => x.id === a.id).stars, 4);
+      assert.equal((await api('POST', '/api/apps/uninstall', { ids: ['w:HKCU:nope'] }, { 'x-expect-error': 1 })).status, 404);
+      assert.equal((await api('POST', '/api/apps/uninstall', { ids: [] }, { 'x-expect-error': 1 })).status, 400);
+      // Both at once: they run one after the other.
+      const q = (await api('POST', '/api/apps/uninstall', { ids: [a.id, b.id] })).json;
+      assert.equal(q.items.length, 2);
+      const end = await waitFor(async () => { const s = (await api('GET', '/api/apps')).json.queue; return s?.state === 'done' ? s : null; }, 90000, 'uninstall queue');
+      const ia = end.items.find(i => i.id === a.id), ib = end.items.find(i => i.id === b.id);
+      assert.equal(ia.state, 'done', JSON.stringify(ia));
+      assert.equal(ib.state, 'kept', JSON.stringify(ib));
+      assert.ok(ia.finishedAt <= ib.startedAt, 'one at a time');
+      const after = (await api('GET', '/api/apps')).json.apps;
+      assert.ok(!after.some(x => x.name === A) && after.some(x => x.name === B), 'list refreshed after the queue');
+      assert.ok((await api('GET', '/api/activity')).json.some(x => x.message === `Uninstalled ${A}`));
+      await api('POST', '/api/apps/queue/clear', {});
+      assert.equal((await api('GET', '/api/apps')).json.queue, null);
+    } finally {
+      await reg(['delete', `${KEY}\\${A}`, '/f']).catch(() => {});
+      await reg(['delete', `${KEY}\\${B}`, '/f']).catch(() => {});
+    }
   });
 
   await step('lock hides items until Windows Hello unlock', async () => {

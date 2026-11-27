@@ -17,7 +17,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js --open",
-    "test": "node test/smoke.mjs"
+    "test": "node test/smoke.mjs && node test/bills.mjs"
   },
   "engines": {
     "node": ">=20"

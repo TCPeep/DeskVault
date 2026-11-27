@@ -9,6 +9,10 @@
 //   drives                                list drives with type/label/space
 //   open <path> | reveal <path>           open with default app / show in Explorer
 //   shortcut <lnk> <target> <args> <workdir> <icon> <description>
+//   apps                                  installed desktop programs + UserAssist launch history
+//   appexists <tag> <key>                 is that Uninstall entry still there?
+//   appicons <listFile> <size>            listFile lines: outPng<TAB>iconSpec; extracts icons to PNG
+//   uninstall <commandLine>               run an uninstaller (its own UI, UAC as needed), wait for it
 //
 // Every command prints a single JSON value on stdout.
 
@@ -46,6 +50,10 @@ static class VaultWin
                 case "hello": return Hello(args);
                 case "binsize": return BinSize();
                 case "emptybin": return EmptyBin();
+                case "apps": return AppsWin.List();
+                case "appexists": return AppsWin.Exists(args);
+                case "appicons": return AppsWin.Icons(args);
+                case "uninstall": return AppsWin.Uninstall(args);
             }
             Console.Error.WriteLine("unknown command: " + args[0]);
             return 2;
@@ -58,9 +66,9 @@ static class VaultWin
     }
 
     // ---------- JSON output ----------
-    static void Out(string json) { Console.Out.Write(json); Console.Out.Flush(); }
+    internal static void Out(string json) { Console.Out.Write(json); Console.Out.Flush(); }
 
-    static string J(string s)
+    internal static string J(string s)
     {
         if (s == null) return "null";
         var sb = new StringBuilder(s.Length + 2);
@@ -504,6 +512,378 @@ static class VaultWin
         lt.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { a[6] });
         lt.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
         Out("true");
+        return 0;
+    }
+}
+
+// ---------- installed apps (Storage > Installed apps) ----------
+static class AppsWin
+{
+    const string UNINSTALL = @"Software\Microsoft\Windows\CurrentVersion\Uninstall";
+
+    static string S(Microsoft.Win32.RegistryKey k, string name)
+    {
+        try { object v = k.GetValue(name); if (v == null) return null; string s = v.ToString().Trim(); return s.Length == 0 ? null : s; }
+        catch { return null; }
+    }
+    static long N(Microsoft.Win32.RegistryKey k, string name)
+    {
+        try { object v = k.GetValue(name); return v == null ? 0 : Convert.ToInt64(v); } catch { return 0; }
+    }
+    static bool IsGuid(string s) { Guid g; return s.Length == 38 && s[0] == '{' && Guid.TryParse(s, out g); }
+
+    static Microsoft.Win32.RegistryKey Root(string tag)
+    {
+        if (tag == "HKLM64") return Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64);
+        if (tag == "HKLM32") return Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry32);
+        if (tag == "HKCU") return Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Default);
+        throw new ArgumentException("unknown hive " + tag);
+    }
+
+    public static int List()
+    {
+        var parts = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string tag in new[] { "HKLM64", "HKLM32", "HKCU" }) Scan(tag, parts, seen);
+        var usage = UserAssist();
+        VaultWin.Out("{\"apps\":[" + string.Join(",", parts.ToArray()) + "],\"usage\":[" + string.Join(",", usage.ToArray()) + "]}");
+        return 0;
+    }
+
+    static void Scan(string tag, List<string> parts, HashSet<string> seen)
+    {
+        Microsoft.Win32.RegistryKey root = null, un = null;
+        try
+        {
+            root = Root(tag);
+            un = root.OpenSubKey(UNINSTALL);
+            if (un == null) return;
+            foreach (string key in un.GetSubKeyNames())
+            {
+                Microsoft.Win32.RegistryKey k = null;
+                try
+                {
+                    k = un.OpenSubKey(key);
+                    if (k == null) continue;
+                    string name = S(k, "DisplayName");
+                    if (name == null || N(k, "SystemComponent") == 1 || S(k, "ParentKeyName") != null) continue;
+                    string rt = S(k, "ReleaseType");
+                    if (rt != null && (rt.IndexOf("update", StringComparison.OrdinalIgnoreCase) >= 0 || rt.IndexOf("hotfix", StringComparison.OrdinalIgnoreCase) >= 0)) continue;
+                    bool msi = N(k, "WindowsInstaller") == 1;
+                    string cmd = S(k, "UninstallString");
+                    if (msi && IsGuid(key)) cmd = "MsiExec.exe /X" + key;
+                    if (cmd == null) continue;
+                    string ver = S(k, "DisplayVersion");
+                    if (!seen.Add(name + "|" + (ver ?? ""))) continue;
+                    string iconSpec = S(k, "DisplayIcon");
+                    if (iconSpec == null && msi && IsGuid(key)) iconSpec = MsiProductIcon(key);
+                    parts.Add("{\"tag\":" + VaultWin.J(tag) + ",\"key\":" + VaultWin.J(key) + ",\"name\":" + VaultWin.J(name) +
+                        ",\"publisher\":" + VaultWin.J(S(k, "Publisher")) + ",\"version\":" + VaultWin.J(ver) +
+                        ",\"installDate\":" + VaultWin.J(S(k, "InstallDate")) + ",\"sizeKb\":" + N(k, "EstimatedSize") +
+                        ",\"icon\":" + VaultWin.J(iconSpec) + ",\"location\":" + VaultWin.J(S(k, "InstallLocation")) +
+                        ",\"uninstall\":" + VaultWin.J(cmd) + ",\"noRemove\":" + (N(k, "NoRemove") == 1 ? "true" : "false") +
+                        ",\"msi\":" + (msi ? "true" : "false") + ",\"url\":" + VaultWin.J(S(k, "URLInfoAbout")) +
+                        ",\"help\":" + VaultWin.J(S(k, "HelpLink")) + ",\"comments\":" + VaultWin.J(S(k, "Comments")) + "}");
+                }
+                catch { }
+                finally { if (k != null) k.Close(); }
+            }
+        }
+        catch { }
+        finally { if (un != null) un.Close(); if (root != null) root.Close(); }
+    }
+
+    /** Windows Installer keeps each product's icon under Installer\Products\<packed product code>\ProductIcon. */
+    static string MsiProductIcon(string guid)
+    {
+        string g = guid.Trim('{', '}').Replace("-", "");
+        if (g.Length != 32) return null;
+        var sb = new StringBuilder();
+        Action<int, int> rev = (start, len) => { for (int i = start + len - 1; i >= start; i--) sb.Append(g[i]); };
+        rev(0, 8); rev(8, 4); rev(12, 4);
+        for (int i = 16; i < 32; i += 2) { sb.Append(g[i + 1]); sb.Append(g[i]); }
+        string packed = sb.ToString();
+        foreach (string where in new[] { @"HKLM|SOFTWARE\Classes\Installer\Products\", @"HKCU|Software\Microsoft\Installer\Products\" })
+        {
+            string[] w = where.Split('|');
+            try
+            {
+                using (var root = Microsoft.Win32.RegistryKey.OpenBaseKey(w[0] == "HKLM" ? Microsoft.Win32.RegistryHive.LocalMachine : Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Registry64))
+                using (var k = root.OpenSubKey(w[1] + packed))
+                {
+                    if (k == null) continue;
+                    string icon = S(k, "ProductIcon");
+                    if (icon != null) return icon;
+                }
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    public static int Exists(string[] a)
+    {
+        if (a.Length < 3) throw new ArgumentException("appexists <tag> <key>");
+        using (var root = Root(a[1]))
+        using (var k = root.OpenSubKey(UNINSTALL + "\\" + a[2]))
+            VaultWin.Out(k != null ? "true" : "false");
+        return 0;
+    }
+
+    // ---------- launch history: Explorer's UserAssist (ROT13 names, count at 4, last run FILETIME at 60) ----------
+    [DllImport("shell32.dll")]
+    static extern int SHGetKnownFolderPath([MarshalAs(UnmanagedType.LPStruct)] Guid rfid, uint flags, IntPtr token, out IntPtr path);
+
+    static string KnownFolder(string g)
+    {
+        try
+        {
+            IntPtr p;
+            if (SHGetKnownFolderPath(new Guid(g), 0, IntPtr.Zero, out p) == 0) { string s = Marshal.PtrToStringUni(p); Marshal.FreeCoTaskMem(p); return s; }
+        }
+        catch { }
+        return null;
+    }
+
+    static string Rot13(string s)
+    {
+        var c = s.ToCharArray();
+        for (int i = 0; i < c.Length; i++)
+        {
+            char x = c[i];
+            if (x >= 'a' && x <= 'z') c[i] = (char)('a' + (x - 'a' + 13) % 26);
+            else if (x >= 'A' && x <= 'Z') c[i] = (char)('A' + (x - 'A' + 13) % 26);
+        }
+        return new string(c);
+    }
+
+    static object wsh;
+    static string LinkTarget(string lnk)
+    {
+        try
+        {
+            if (!File.Exists(lnk)) return null;
+            Type t = Type.GetTypeFromProgID("WScript.Shell");
+            if (wsh == null) wsh = Activator.CreateInstance(t);
+            object s = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, wsh, new object[] { lnk });
+            string target = (string)s.GetType().InvokeMember("TargetPath", BindingFlags.GetProperty, null, s, null);
+            return string.IsNullOrEmpty(target) ? null : target;
+        }
+        catch { return null; }
+    }
+
+    static List<string> UserAssist()
+    {
+        var list = new List<string>();
+        try
+        {
+            using (var ua = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"))
+            {
+                if (ua == null) return list;
+                foreach (string g in ua.GetSubKeyNames())
+                {
+                    using (var c = ua.OpenSubKey(g + @"\Count"))
+                    {
+                        if (c == null) continue;
+                        foreach (string vn in c.GetValueNames())
+                        {
+                            string n = Rot13(vn);
+                            if (n.StartsWith("{"))
+                            {
+                                int e = n.IndexOf('}');
+                                if (e > 0 && n.Length > e + 1 && n[e + 1] == '\\') { string kf = KnownFolder(n.Substring(1, e - 1)); if (kf != null) n = kf + n.Substring(e + 1); }
+                            }
+                            // Start menu / taskbar launches are recorded against the shortcut: follow it to the program.
+                            if (n.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) && n.IndexOf(":\\") == 1)
+                            {
+                                string target = LinkTarget(n);
+                                if (target == null) continue;
+                                n = target;
+                            }
+                            if (!n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || n.IndexOf(":\\") != 1) continue;
+                            var d = c.GetValue(vn) as byte[];
+                            if (d == null || d.Length < 68) continue;
+                            int count = BitConverter.ToInt32(d, 4);
+                            long ft = BitConverter.ToInt64(d, 60);
+                            string last = null;
+                            if (ft > 0) { try { last = DateTime.FromFileTimeUtc(ft).ToString("o"); } catch { } }
+                            if (count <= 0 && last == null) continue;
+                            list.Add("{\"path\":" + VaultWin.J(n) + ",\"count\":" + count + ",\"last\":" + VaultWin.J(last) + "}");
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    // ---------- icons ----------
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern uint PrivateExtractIcons(string file, int index, int cx, int cy, IntPtr[] icons, uint[] ids, uint n, uint flags);
+    [DllImport("user32.dll")]
+    static extern bool DestroyIcon(IntPtr h);
+
+    public static int Icons(string[] a)
+    {
+        if (a.Length < 3) throw new ArgumentException("appicons <listFile> <size>");
+        int size = int.Parse(a[2]), ok = 0;
+        foreach (string line in File.ReadAllLines(a[1], Encoding.UTF8))
+        {
+            string[] t = line.Split('\t');
+            if (t.Length < 2) continue;
+            try { if (SaveIcon(t[1], t[0], size)) ok++; } catch { }
+        }
+        VaultWin.Out(ok.ToString());
+        return 0;
+    }
+
+    [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItemImageFactory { [PreserveSig] int GetImage(SIZE size, int flags, out IntPtr phbm); }
+    [StructLayout(LayoutKind.Sequential)] struct SIZE { public int cx, cy; }
+    [StructLayout(LayoutKind.Sequential)] struct BITMAP { public int bmType, bmWidth, bmHeight, bmWidthBytes; public ushort bmPlanes, bmBitsPixel; public IntPtr bmBits; }
+    [StructLayout(LayoutKind.Sequential)] struct BITMAPINFOHEADER { public int biSize, biWidth, biHeight; public short biPlanes, biBitCount; public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant; }
+    [StructLayout(LayoutKind.Sequential)] struct ICONINFO { public bool fIcon; public int xHotspot, yHotspot; public IntPtr hbmMask, hbmColor; }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory ppv);
+    [DllImport("gdi32.dll")] static extern int GetObject(IntPtr h, int size, ref BITMAP bm);
+    [DllImport("gdi32.dll")] static extern int GetDIBits(IntPtr dc, IntPtr hbm, uint start, uint lines, byte[] bits, ref BITMAPINFOHEADER bi, uint usage);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("user32.dll")] static extern bool GetIconInfo(IntPtr icon, out ICONINFO info);
+
+    /** The shell's own icon for a file (what Explorer shows), alpha intact. */
+    static Bitmap ShellIcon(string file, int size)
+    {
+        try
+        {
+            IShellItemImageFactory f;
+            SHCreateItemFromParsingName(file, IntPtr.Zero, typeof(IShellItemImageFactory).GUID, out f);
+            IntPtr hbm;
+            var sz = new SIZE(); sz.cx = size; sz.cy = size;
+            if (f.GetImage(sz, 0x4 /* SIIGBF_ICONONLY */, out hbm) != 0 || hbm == IntPtr.Zero) return null;
+            try { return Pixels(hbm, true); } finally { DeleteObject(hbm); }
+        }
+        catch { return null; }
+    }
+
+    static Bitmap IconBitmap(IntPtr hicon)
+    {
+        ICONINFO ii;
+        if (!GetIconInfo(hicon, out ii)) return null;
+        try
+        {
+            Bitmap b = ii.hbmColor != IntPtr.Zero ? Pixels(ii.hbmColor, false) : null;
+            if (b != null) return b;
+            using (var ic = Icon.FromHandle(hicon)) return new Bitmap(ic.ToBitmap());
+        }
+        finally { if (ii.hbmColor != IntPtr.Zero) DeleteObject(ii.hbmColor); if (ii.hbmMask != IntPtr.Zero) DeleteObject(ii.hbmMask); }
+    }
+
+    /** Copy a 32-bit HBITMAP's pixels (with alpha) into a Bitmap; GDI+'s FromHbitmap would drop the alpha. */
+    static Bitmap Pixels(IntPtr hbm, bool premultiplied)
+    {
+        var bm = new BITMAP();
+        if (GetObject(hbm, Marshal.SizeOf(typeof(BITMAP)), ref bm) == 0 || bm.bmBitsPixel != 32) return null;
+        int w = bm.bmWidth, h = Math.Abs(bm.bmHeight);
+        var bi = new BITMAPINFOHEADER();
+        bi.biSize = 40; bi.biWidth = w; bi.biHeight = -h; bi.biPlanes = 1; bi.biBitCount = 32;
+        var px = new byte[w * h * 4];
+        IntPtr dc = GetDC(IntPtr.Zero);
+        try { if (GetDIBits(dc, hbm, 0, (uint)h, px, ref bi, 0) == 0) return null; } finally { ReleaseDC(IntPtr.Zero, dc); }
+        bool anyAlpha = false;
+        for (int i = 3; i < px.Length; i += 4) if (px[i] != 0) { anyAlpha = true; break; }
+        if (!anyAlpha) return null;
+        var fmt = premultiplied ? System.Drawing.Imaging.PixelFormat.Format32bppPArgb : System.Drawing.Imaging.PixelFormat.Format32bppArgb;
+        var tmp = new Bitmap(w, h, fmt);
+        var data = tmp.LockBits(new Rectangle(0, 0, w, h), System.Drawing.Imaging.ImageLockMode.WriteOnly, fmt);
+        for (int y = 0; y < h; y++) Marshal.Copy(px, y * w * 4, new IntPtr(data.Scan0.ToInt64() + (long)y * data.Stride), w * 4);
+        tmp.UnlockBits(data);
+        if (!premultiplied) return tmp;
+        var outBmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(outBmp)) g.DrawImage(tmp, 0, 0, w, h);
+        tmp.Dispose();
+        return outBmp;
+    }
+
+    static bool SaveIcon(string spec, string outPath, int size)
+    {
+        string file = spec.Trim();
+        int index = 0;
+        if (file.StartsWith("\""))
+        {
+            int q = file.IndexOf('"', 1);
+            string rest = q > 0 ? file.Substring(q + 1).Trim() : "";
+            file = q > 0 ? file.Substring(1, q - 1) : file.Trim('"');
+            if (rest.StartsWith(",")) int.TryParse(rest.Substring(1).Trim(), out index);
+        }
+        else
+        {
+            int c = file.LastIndexOf(',');
+            int ix;
+            if (c > 2 && int.TryParse(file.Substring(c + 1).Trim(), out ix)) { index = ix; file = file.Substring(0, c).Trim(); }
+        }
+        file = Environment.ExpandEnvironmentVariables(file);
+        if (!File.Exists(file)) return false;
+        Bitmap bmp = null;
+        // Index 0 (the usual case) and .ico files: ask the shell, which handles PNG-compressed and 256px icons.
+        if (index == 0 || file.EndsWith(".ico", StringComparison.OrdinalIgnoreCase)) bmp = ShellIcon(file, size);
+        if (bmp == null)
+        {
+            var h = new IntPtr[1];
+            var ids = new uint[1];
+            uint n = PrivateExtractIcons(file, index, size, size, h, ids, 1, 0);
+            if (n > 0 && n != 0xFFFFFFFF && h[0] != IntPtr.Zero) { bmp = IconBitmap(h[0]); DestroyIcon(h[0]); }
+        }
+        if (bmp == null) bmp = ShellIcon(file, size);
+        if (bmp == null) return false;
+        Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+        bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+        bmp.Dispose();
+        return true;
+    }
+
+    // ---------- uninstall ----------
+    static void Split(string cmd, out string file, out string args)
+    {
+        if (cmd.StartsWith("\""))
+        {
+            int q = cmd.IndexOf('"', 1);
+            if (q > 0) { file = cmd.Substring(1, q - 1); args = cmd.Substring(q + 1).Trim(); return; }
+        }
+        string[] t = cmd.Split(' ');
+        for (int i = t.Length; i >= 1; i--)
+        {
+            string c = string.Join(" ", t, 0, i);
+            if (File.Exists(c) || (!c.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(c + ".exe")))
+            { file = c; args = string.Join(" ", t, i, t.Length - i).Trim(); return; }
+        }
+        file = t[0];
+        args = string.Join(" ", t, 1, t.Length - 1).Trim();
+    }
+
+    public static int Uninstall(string[] a)
+    {
+        if (a.Length < 2) throw new ArgumentException("uninstall <commandLine>");
+        string file, args;
+        Split(Environment.ExpandEnvironmentVariables(a[1].Trim()), out file, out args);
+        var psi = new ProcessStartInfo(file, args);
+        psi.UseShellExecute = true;
+        try { if (Path.IsPathRooted(file)) psi.WorkingDirectory = Path.GetDirectoryName(file); } catch { }
+        Process p;
+        try { p = Process.Start(psi); }
+        catch (System.ComponentModel.Win32Exception e)
+        {
+            if (e.NativeErrorCode == 1223) { VaultWin.Out("{\"ok\":false,\"cancelled\":true}"); return 0; }
+            VaultWin.Out("{\"ok\":false,\"error\":" + VaultWin.J(e.Message) + "}");
+            return 0;
+        }
+        if (p == null) { VaultWin.Out("{\"ok\":true,\"code\":null}"); return 0; }
+        p.WaitForExit();
+        string code = "null";
+        try { code = p.ExitCode.ToString(); } catch { }
+        VaultWin.Out("{\"ok\":true,\"code\":" + code + "}");
         return 0;
     }
 }

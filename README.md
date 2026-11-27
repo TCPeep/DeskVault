@@ -50,12 +50,18 @@ move or reorganise. One click backs the whole lot up to a USB drive.
   everything in one click afterwards. [More &rarr;](docs/features/reinstall.md)
 - **Storage manager.** Scan drives or folders to find big files you haven't
   opened in years, duplicates and old `node_modules`; send them to the
-  Recycle Bin or move them to another drive.
+  Recycle Bin or move them to another drive. [More &rarr;](docs/features/storage.md)
+- **Installed apps.** Every program and Store app with its icon, size and when
+  you last opened it. Rate them, keep notes, and uninstall one or many at once
+  with their own uninstallers. [More &rarr;](docs/features/storage.md#installed-apps)
+- **Bills.** Upcoming due dates, a monthly total that evens out yearly and
+  quarterly bills, what's late, and a calendar. [More &rarr;](docs/features/bills.md)
 - **Windows Hello lock.** Lock items or whole collections. They stay hidden
   until you unlock with your PIN, fingerprint or face.
-- **Local AI (optional).** Ask questions about your own notes and files;
-  answers cite numbered sources you can click. Runs on **your** GPU through
-  [Ollama](https://ollama.com). [More &rarr;](docs/features/ai.md)
+- **Local AI (optional).** Ask questions about your own notes, files and
+  projects; answers cite numbered sources you can click. Chats are saved,
+  follow-ups keep their context, and a **memory** keeps facts you teach it.
+  Runs on **your** GPU through [Ollama](https://ollama.com). [More &rarr;](docs/features/ai.md)
 
 > [!NOTE]
 > **Nothing leaves your PC.** DeskVault binds to `127.0.0.1` only. The only
@@ -75,6 +81,11 @@ move or reorganise. One click backs the whole lot up to a USB drive.
     <td align="center"><b>Backups to any drive</b><br><br><img src="docs/images/backups-dark.png" alt="Backups page showing a dated snapshot folder on the backup drive" width="320"></td>
     <td align="center"><b>Reinstall-ready</b><br><br><img src="docs/images/reinstall-dark.png" alt="Reinstall page listing easy-to-forget folders a Windows reinstall would wipe" width="320"></td>
     <td align="center"><b>Storage: duplicates & stale files</b><br><br><img src="docs/images/storage-duplicates-dark.png" alt="Storage page showing duplicate files and gigabytes recoverable" width="320"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Installed apps: uninstall several at once</b><br><br><img src="docs/images/installed-apps-uninstall-dark.png" alt="Installed apps filtered to apps not opened in 6 months, with three selected and an Uninstall 3 apps button" width="320"></td>
+    <td align="center"><b>Bills and due dates</b><br><br><img src="docs/images/bills-dark.png" alt="Bills page with a late bill, monthly total, the next 7 days and a month calendar" width="320"></td>
+    <td align="center"><b>AI memory and saved chats</b><br><br><img src="docs/images/ask-ai-memory-dark.png" alt="The Memory panel listing facts the AI keeps in mind for every answer" width="320"></td>
   </tr>
 </table>
 
